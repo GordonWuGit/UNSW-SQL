@@ -1,0 +1,477 @@
+-- Q1: students who've studied many courses
+
+create or replace view Q1(unswid,name)
+AS
+SELECT P.unswid, P.name
+FROM People P
+WHERE P.id in (
+   -- Creating table which returns all students' ids with more than 65 courses
+   SELECT student
+   FROM course_enrolments
+   GROUP BY student
+   HAVING COUNT(course) > 65
+) 
+;
+
+-- Q2: numbers of students, staff and both
+
+create or replace view Q2(nstudents,nstaff,nboth)
+AS
+SELECT (
+   -- Counting for students excluding staff
+   SELECT COUNT(*)
+      FROM (
+      SELECT id
+      FROM students
+      EXCEPT
+      SELECT id
+      FROM staff
+      ) AS foo
+),
+(
+   -- Counting for staff excluding students
+   SELECT COUNT(*)
+   FROM (
+      SELECT S.id
+      FROM staff as S
+      EXCEPT
+      SELECT St.id
+      FROM students as St
+   ) AS goo
+),
+(
+   -- Counting for both students and staffs
+   SELECT COUNT(*)
+   FROM (
+      SELECT S.id
+      FROM staff as S
+      INTERSECT
+      SELECT St.id
+      FROM students as St
+   ) AS hoo
+)
+;
+
+-- Q3: prolific Course Convenor(s)
+
+create or replace view Q3(name,ncourses)
+as
+SELECT people.name, maxtable.maxnum
+FROM people, (
+   -- Creating a table to see number of courses taken by staff as LIC
+   SELECT staff, COUNT(staff) AS maxnum 
+   FROM course_staff
+   WHERE role = (
+      -- Choosing id for Course Convenor
+      SELECT id
+      FROM staff_roles
+      WHERE name = 'Course Convenor' 
+   )
+   GROUP BY staff
+   ORDER BY maxnum
+) as maxtable
+-- Choosing where courses taken = courses in case more than 1 person with max
+WHERE people.id = maxtable.staff AND maxtable.maxnum = (SELECT MAX(maxtable.maxnum) FROM people, (
+   -- Creating a table to see number of courses taken by staff as LIC
+   SELECT staff, COUNT(staff) AS maxnum 
+   FROM course_staff
+   WHERE role = (
+      -- Choosing id for Course Convenor
+      SELECT id
+      FROM staff_roles
+      WHERE name = 'Course Convenor' 
+   )
+   GROUP BY staff
+   ORDER BY maxnum
+) as maxtable)
+ORDER BY name
+;
+
+-- Q4: Comp Sci students in 05s2 and 17s1
+
+create or replace view Q4a(id,name)
+as
+SELECT people.unswid, people.name
+FROM people
+WHERE people.id in (
+   -- Creating a table for all students in the Course and the term name
+   SELECT P.student
+   FROM program_enrolments as P
+   WHERE P.program = (
+      SELECT Prog.id
+      FROM programs as Prog
+      WHERE Prog.code = '3978'
+   -- Checking for term 05s2 which is 2005 Session S2
+   ) AND P.term = (
+      SELECT T.id
+      FROM terms as T
+      WHERE T.year = '2005' AND T.session = 'S2'
+   )
+)
+ORDER BY id ASC
+;
+
+create or replace view Q4b(id,name)
+as
+SELECT people.unswid, people.name
+FROM people
+WHERE people.id in (
+   -- Creating a table for all students in the Course and the term name
+   SELECT P.student
+   FROM program_enrolments as P
+   WHERE P.program = (
+      SELECT Prog.id
+      FROM programs as Prog
+      WHERE Prog.code = '3778'
+   -- Checking for term 05s2 which is 2005 Session S2
+   ) AND P.term = (
+      SELECT T.id
+      FROM terms as T
+      WHERE T.year = '2017' AND T.session = 'S1'
+   )
+)
+;
+
+-- Q5: most "committee"d faculty
+
+create or replace view Q5(name)
+as
+SELECT OrgUnits.name
+FROM OrgUnits
+WHERE OrgUnits.id in (
+   -- Seeing if Org has max comittee
+   SELECT numcom.id
+   FROM (
+      -- Creating table for how many comittees per fac
+      SELECT facultyof(id) AS id, COUNT(facultyof(id)) AS num
+      FROM OrgUnits
+      WHERE utype = (
+         -- Getting comittee id
+         SELECT id
+         FROM Orgunit_types
+         WHERE name = 'Committee'
+      )
+      GROUP BY facultyof(id)
+   ) AS numcom
+   -- Checking if the num of comittees for fac is the most
+   WHERE num = (
+      SELECT MAX(num)
+      FROM (
+         -- Getting the from above again
+         SELECT facultyof(id) AS id, COUNT(facultyof(id)) AS num
+         FROM OrgUnits
+         WHERE utype = (
+            SELECT id
+            FROM Orgunit_types
+            WHERE name = 'Committee'
+         )
+         GROUP BY facultyof(id)
+      ) AS Hello
+   )
+)
+;
+
+-- Q6: nameOf function
+
+create or replace function
+   q6(id integer) returns text
+as $$
+   -- Select the name of those with id given
+   SELECT people.name FROM people WHERE people.id = $1 or people.unswid = $1;
+$$ language sql;
+
+
+-- Q7: offerings of a subject
+create or replace function
+   Q7(mcode text)
+     returns table (subject text, term text, convenor text)
+as $$
+SELECT text(S.code), termname(C.term), P.name
+FROM subjects as S, courses as C, people as P
+-- Matching subject with code
+WHERE C.subject = (
+                   SELECT S.id
+                   FROM subjects as S
+                   WHERE S.code = $1
+                  )
+AND 
+-- Matching people with code
+P.id IN (
+         SELECT staff
+         FROM course_staff
+         WHERE role = (
+                       -- Checking if there is a Course Convenor is in it
+                       SELECT R.id
+                       FROM staff_roles as R
+                       WHERE R.name = 'Course Convenor'
+                      )
+  AND course_staff.course = C.id
+)
+AND
+S.code = $1
+$$ language sql;
+
+-- Q8: transcript
+
+create or replace function
+   Q8(zid integer) returns setof TranscriptRecord
+as $$
+DECLARE
+   transcript TranscriptRecord%ROWTYPE;
+   tuple RECORD;
+   sid INTEGER;
+   weightedSumOfMarks INTEGER := 0;
+   wamValue DECIMAL(2) := 0;
+   sterm INTEGER := 0;
+   UOCpassed INTEGER := 0;
+   totalUOCattempted INTEGER := 0;
+
+BEGIN
+   -- sid = student.id for clarity and easier use
+   sid := (SELECT S.id
+               FROM People as S
+               WHERE S.unswid = $1
+               );
+   -- Going through all of courses student has enrolled in
+   FOR tuple in (SELECT * FROM course_enrolments WHERE course_enrolments.student = sid)
+   LOOP
+      -- Getting the code from subjects from courses and matching with the tuple
+      transcript.code := (SELECT subjects.code
+                         FROM subjects
+                         WHERE subjects.id = (SELECT courses.subject
+                                              FROM courses
+                                              WHERE courses.id = tuple.course
+                                             )
+                        );
+      -- Finding the term the student did the course in
+      sterm := (SELECT (courses.term)
+               FROM courses
+               WHERE courses.id = tuple.course
+               );
+      transcript.term := termname(sterm);
+      -- Finding the program the student has enrolled in, in that term
+      transcript.prog := (SELECT programs.code
+                          FROM programs
+                          WHERE programs.id = (SELECT program_enrolments.program
+                                               FROM program_enrolments
+                                               WHERE program_enrolments.student = sid
+                                               AND program_enrolments.term = CAST(sterm AS INT)
+                                              )
+                         );
+      -- Finding the name of the subject
+      transcript.name := (SELECT substr(subjects.name, 0, 21)
+                          FROM subjects
+                          WHERE subjects.code = transcript.code
+                         );
+      -- Finding the mark of course
+      transcript.mark := tuple.mark;
+      -- Finding the grade of course
+      transcript.grade := tuple.grade;
+      
+      
+      transcript.uoc := NULL;
+      -- If they did not Fail and have a mark
+      IF transcript.grade in ('SY', 'PT', 'PC', 'PS', 'CR', 'DN', 'HD', 'A', 'B', 'C', 'RC', 'RS')
+      THEN 
+      transcript.uoc := (SELECT subjects.uoc
+                         FROM subjects
+                         WHERE subjects.code = transcript.code
+                        );
+      IF tuple.mark is not NULL THEN weightedSumOfMarks := weightedSumOfMarks + (tuple.mark*transcript.uoc); END IF;
+
+      UOCpassed := UOCpassed + transcript.uoc;
+      totalUOCattempted := totalUOCattempted + transcript.uoc;
+      END IF;
+      -- If they did not fail but no mark
+      IF transcript.grade in ('XE', 'T', 'SY', 'PE')
+      THEN
+      transcript.uoc := (SELECT subjects.uoc
+                         FROM subjects
+                         WHERE subjects.code = transcript.code
+                        );
+      UOCpassed := UOCpassed + transcript.uoc;
+
+      END IF;
+      -- If they did fail or invalid grade
+      IF transcript.grade not in ('SY', 'PT', 'PC', 'PS', 'CR', 'DN', 'HD', 'A', 'B', 'C', 'RC', 'RS', 'XE', 'T', 'SY', 'PE') THEN
+      totalUOCattempted := totalUOCattempted + (SELECT subjects.uoc
+                         FROM subjects
+                         WHERE subjects.code = transcript.code
+                        );
+      END IF;
+      
+      
+      RETURN NEXT transcript;
+   END LOOP;
+   transcript.term := NULL;
+   transcript.prog := NULL;
+   transcript.grade := NULL;
+   transcript.code := NULL;
+   -- If no courses done
+   IF totalUOCattempted = 0
+   THEN transcript.name := 'No WAM available';
+   -- If done the courses calculate the wam and uoc
+   ELSE
+      wamValue := weightedSumOfMarks/totalUOCattempted;
+      transcript.mark := wamValue;
+      transcript.uoc := UOCpassed;
+      transcript.name := 'Overall WAM/UOC';
+   END IF;
+   RETURN NEXT transcript;
+   RETURN;
+END;
+$$ language plpgsql;
+
+-- Q9: members of academic object group
+
+create or replace function
+   Q9(gid integer) returns setof AcObjRecord
+as $$
+DECLARE
+   obj AcObjRecord%ROWTYPE;
+   grtype TEXT;
+   def TEXT;
+   tuple RECORD;
+   pattern TEXT;
+   pattuple RECORD;
+   exe TEXT;
+BEGIN
+   -- Get the type
+   grtype := (SELECT gtype
+             FROM acad_object_groups
+             WHERE id = gid
+            );
+
+   -- Get how it is defined
+   def := (SELECT gdefby
+           FROM acad_object_groups
+           WHERE id = gid 
+          );
+   -- For Enumerated
+   IF def = 'enumerated' THEN
+      -- For Stream
+      IF grtype = 'stream' THEN 
+         -- Go through all stream_group_members.stream with ao_group is gid
+         FOR tuple in (SELECT * FROM stream_group_members WHERE ao_group = $1)
+         LOOP
+            obj.objtype := 'stream';
+            -- Get the code from streams
+            obj.objcode := (SELECT code
+                            FROM streams
+                            WHERE streams.id = tuple.stream
+                           );
+            RETURN NEXT obj;
+         END LOOP;
+      END IF;
+      -- For subject
+      IF grtype = 'subject' THEN
+         -- Go through all subject_group_members.subject with ao_group is gid
+         FOR tuple in (SELECT * FROM subject_group_members WHERE ao_group = $1)
+         LOOP
+            obj.objtype := 'subject';
+            -- Get the code from subjects
+            obj.objcode := (SELECT code
+                            FROM subjects
+                            WHERE subjects.id = tuple.subject
+                           );
+            RETURN NEXT obj;
+         END LOOP;
+      END IF;
+      -- For program
+      IF grtype = 'program' THEN
+      -- Go through all program_group_members.program with ao_group is gid
+         FOR tuple in (SELECT * FROM program_group_members WHERE ao_group = $1)
+         LOOP
+            obj.objtype := 'program';
+            -- Get the code from programs
+            obj.objcode := (SELECT code
+                            FROM programs
+                            WHERE programs.id = tuple.program
+                           );
+            RETURN NEXT obj;
+         END LOOP;
+      END IF;
+   END IF;
+   IF def = 'pattern' THEN
+      IF grtype = 'subject' THEN
+         -- Making pattern more useable 
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '#', '_', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '{', '(', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '}', ')', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), ',', '|', 'g');
+         FOR tuple in (SELECT * FROM pattern)
+         LOOP
+         exe := 'SELECT subjects.code FROM subjects WHERE subjects.code ~ ' || tuple || ') IS NOT NULL';
+         EXECUTE exe;
+         -- If it is in database
+         IF (FOUND) THEN
+            FOR pattuple in EXECUTE exe
+            LOOP
+               obj.objcode := pattuple;
+               obj.objtype := 'subject';
+            END LOOP;
+         END IF;
+         -- IF not in database
+         IF (NOT FOUND) THEN
+            obj.objcode := tuple;
+            obj.objtype := 'subject';
+         END IF;
+         RETURN NEXT obj;
+         END LOOP;
+      END IF;
+      IF grtype = 'program' THEN
+         -- Making pattern more useable 
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '#', '_', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '{', '', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), '}', '', 'g');
+         pattern := regexp_replace((SELECT definition FROM acad_object_groups WHERE id = gid), ';', ',', 'g');
+         pattern := CAST(pattern AS TEXT);
+         pattern := regexp_split_to_table(pattern, ',');
+         FOR tuple in (SELECT * FROM pattern)
+         LOOP
+         exe := 'SELECT programs.code FROM programs WHERE programs.code ~ ' || tuple || ') IS NOT NULL';
+         EXECUTE exe;
+         -- If it is in database
+         IF (FOUND) THEN
+            FOR pattuple in EXECUTE exe
+            LOOP
+               obj.objcode := pattuple;
+               obj.objtype := 'program';
+            END LOOP;
+         END IF;
+         -- If it is not in database
+         IF (NOT FOUND) THEN
+            obj.objcode := tuple;
+            obj.objtype := 'program';
+         END IF;
+         RETURN NEXT obj;
+         END LOOP;
+      END IF;
+   END IF;
+   RETURN;
+END;
+$$ language plpgsql;
+
+-- Q10: follow-on courses
+
+create or replace function
+   Q10(code text) returns setof text
+as $$
+DECLARE
+   sid INTEGER;
+   tuple RECORD;
+   ret RECORD;
+   rule INTEGER;
+   ret TEXT%ROWTYPE;
+BEGIN
+   sid := (SELECT subjects.id FROM subjects WHERE subjects.code = $1);
+   rule := (SELECT subject_prereqs.rule FROM subject_prereqs WHERE subject_prereqs.subject = sid);
+   gid := (SELECT ao_group FROM rules WHERE id = rule);
+   tuple := (SELECT objcode FROM q9(gid));
+   FOR ret IN tuple
+   LOOP
+      RETURN NEXT ret;
+   END LOOP;
+   RETURN;
+END;
+$$ language plpgsql;
