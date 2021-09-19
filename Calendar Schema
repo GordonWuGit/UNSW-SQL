@@ -1,0 +1,137 @@
+-- Calendar schema
+-- Written by Gordon Wu z5310386
+
+-- Types
+
+create type AccessibilityType as enum ('read-write','read-only','none');
+create type InviteStatus as enum ('invited','accepted','declined');
+create type DayOfWeek as enum ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday');
+create type VisibilityType as enum ('public', 'private');
+
+
+-- Tables
+
+create table Users (
+	id          		serial,
+	email       		text not null unique,
+	name        		text not null,
+	is_admin			boolean not null,
+	passwd	   			text not null,
+	primary key (id)
+);
+
+create table Groups (
+	id          		serial,
+	name        		text not null,
+	owner				serial not null,
+	primary key (id),
+	foreign key (owner) references Users(id)
+);
+
+create table Calendars (
+	colour				text not null,
+	id					serial,
+	name				text not null,
+	default_access		AccessibilityType not null,
+	owner 				serial,
+	primary key (id),
+	foreign key (owner) references Users(id)
+);
+
+create table Events (
+	id					serial,
+	visibility			VisibilityType not null,
+	owner				serial,
+	calendars_id		serial,
+	title 				text not null,
+	start_time			time,
+	end_time			time,
+	location			text,
+	primary key (id),
+	foreign key (owner) references Users(id),
+	foreign key (calendars_id) references Calendars(id)
+);
+
+create table One_day_Events (
+	events_id 			serial,
+	date   				date not null,
+	foreign key (events_id) references Events(id)
+);
+
+create table Spanning_Events (
+	events_id 			serial,
+	start_date			date not null,
+	end_date			date not null,
+	foreign key (events_id) references Events(id)
+);
+
+create table Recurring_Events (
+	events_id			serial,
+	ntimes				integer,
+	start_date 			date not null,
+	end_date			date,
+	foreign key (events_id) references Events(id)
+);
+
+create table Weekly_Events (
+	recurring_event_id 	serial,
+	dayOfWeek			DayOfWeek not null,
+	frequency			integer not null,
+	foreign key (recurring_event_id) references Events(id)
+);
+
+create table MonthlyByDayEvents (
+	recurring_event_id 	serial,
+	dayOfweek			DayOfWeek not null,
+	weekInMonth			integer not null,
+	foreign key (recurring_event_id) references Events(id)
+);
+
+create table MonthlyByDateEvents (
+	recurring_event_id 	serial,
+	dateInMonth			integer not null,
+	foreign key (recurring_event_id) references Events(id)
+);
+
+create table Annual_Events (
+	recurring_event_id 	serial,
+	date 				date not null,
+	foreign key (recurring_event_id) references Events(id)
+);
+
+create table Alarms (
+	events_id			serial not null,
+	alarm				integer not null,
+	foreign key (events_id) references Events(id)
+);
+
+create table Members (
+	groups_id			serial not null,
+	users_id			serial not null,
+	foreign key (groups_id) references Groups(id),
+	foreign key (users_id) references Users(id)
+);
+
+create table Accessibilities (
+	users_id			serial,
+	calendars_id 		serial,
+	access				AccessibilityType not null,
+	foreign key (calendars_id) references Calendars(id),
+	foreign key (users_id) references Users(id)
+);
+
+create table Subscribed (
+	users_id 			serial,
+	calendars_id 		serial,
+	colour				text,
+	foreign key (calendars_id) references Calendars(id),
+	foreign key (users_id) references Users(id)
+);
+
+create table Invites (
+	events_id 			serial,
+	users_id			serial,
+	status				InviteStatus not null,
+	foreign key (events_id) references Events(id),
+	foreign key (users_id) references Users(id)
+);	
